@@ -1,22 +1,24 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Adaptive Ball Tracking</title>
+    <title>Clay Ball Tracker</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { text-align:center; background:#111; color:white; font-family: sans-serif; }
-        video, canvas { border:2px solid #444; border-radius: 8px; margin:10px; }
-        .controls { margin: 20px; padding: 10px; background: #222; display: inline-block; border-radius: 5px; }
+        body { text-align:center; background:#111; color:white; font-family: sans-serif; margin: 0; padding: 10px; }
+        video, canvas { border:2px solid #444; border-radius: 8px; max-width: 100%; height: auto; margin-top: 10px; }
+        .controls { margin: 15px; padding: 10px; background: #222; display: inline-block; border-radius: 5px; font-size: 14px; }
         #status { color: #0f0; font-weight: bold; }
+        h2 { margin-bottom: 5px; }
     </style>
 </head>
 <body>
 
-<h2>🏏 Adaptive Ball Tracking</h2>
-<p>Click the ball in the video to start tracking that color!</p>
+<h2>🏏 Ball Tracking System</h2>
+<p style="font-size: 0.9em; color: #ccc;">Tap the clay ball on the screen to track its color</p>
 
 <div class="controls">
-    Target Hue: <span id="hueVal">None</span> | 
-    Status: <span id="status">Waiting for input...</span>
+    Hue: <span id="hueVal">None</span> | 
+    <span id="status">Waiting for tap...</span>
 </div><br>
 
 <video id="video" width="400" height="300" autoplay playsinline style="display:none;"></video>
@@ -29,25 +31,51 @@ let ctx = canvas.getContext("2d");
 let trail = [];
 let targetHue = null;
 
-// 1. Get Camera
-navigator.mediaDevices.getUserMedia({ video: { width: 400, height: 300 } })
-.then(stream => { video.srcObject = stream; });
+// 1. Request Back Camera (Environment Mode)
+const constraints = {
+    video: { 
+        facingMode: { ideal: "environment" },
+        width: { ideal: 400 },
+        height: { ideal: 300 }
+    }
+};
 
-// 2. Click to Sample Color (The "Clay Picker")
-canvas.addEventListener('mousedown', (e) => {
+navigator.mediaDevices.getUserMedia(constraints)
+.then(stream => { 
+    video.srcObject = stream; 
+})
+.catch(err => {
+    console.warn("Back camera failed, using default:", err);
+    navigator.mediaDevices.getUserMedia({ video: true })
+    .then(s => video.srcObject = s);
+});
+
+// 2. Click/Tap to Sample Color
+canvas.addEventListener('mousedown', sampleColor);
+canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    sampleColor(e.touches[0]);
+});
+
+function sampleColor(e) {
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
     
     const pixel = ctx.getImageData(x, y, 1, 1).data;
     const hsv = rgbToHsv(pixel[0], pixel[1], pixel[2]);
-    targetHue = hsv.h;
-    document.getElementById("hueVal").innerText = Math.round(targetHue * 360) + "°";
-    document.getElementById("status").innerText = "Tracking...";
-    trail = []; // Reset trail for new ball
-});
+    
+    if (hsv.s > 0.1) { // Ensure it's not a gray/white area
+        targetHue = hsv.h;
+        document.getElementById("hueVal").innerText = Math.round(targetHue * 360) + "°";
+        document.getElementById("status").innerText = "Tracking!";
+        trail = []; 
+    }
+}
 
-// 3. RGB to HSV Conversion Utility
+// 3. RGB to HSV Converter
 function rgbToHsv(r, g, b) {
     r /= 255, g /= 255, b /= 255;
     let max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -66,47 +94,54 @@ function rgbToHsv(r, g, b) {
     return { h, s, v };
 }
 
+// 4. Main Loop
 function detectBall() {
     ctx.drawImage(video, 0, 0, 400, 300);
-    if (targetHue === null) {
-        requestAnimationFrame(detectBall);
-        return;
-    }
+    
+    if (targetHue !== null) {
+        let frame = ctx.getImageData(0, 0, 400, 300);
+        let data = frame.data;
+        let sumX = 0, sumY = 0, count = 0;
 
-    let frame = ctx.getImageData(0, 0, 400, 300);
-    let data = frame.data;
-    let sumX = 0, sumY = 0, count = 0;
+        // Scan every 4th pixel for speed
+        for(let i = 0; i < data.length; i += 16) {
+            let hsv = rgbToHsv(data[i], data[i+1], data[i+2]);
 
-    // Optimization: Check every 2nd pixel to save CPU
-    for(let i = 0; i < data.length; i += 8) {
-        let hsv = rgbToHsv(data[i], data[i+1], data[i+2]);
+            // Range check (+/- 0.07 hue)
+            if(Math.abs(hsv.h - targetHue) < 0.07 && hsv.s > 0.25 && hsv.v > 0.2) {
+                let x = (i/4) % 400;
+                let y = Math.floor((i/4) / 400);
+                sumX += x; sumY += y; count++;
+            }
+        }
 
-        // Check if Hue is within +/- 10% range and has enough color (Saturation)
-        if(Math.abs(hsv.h - targetHue) < 0.05 && hsv.s > 0.3 && hsv.v > 0.2) {
-            let x = (i/4) % 400;
-            let y = Math.floor((i/4) / 400);
-            sumX += x; sumY += y; count++;
+        if(count > 15) {
+            let centerX = sumX / count;
+            let centerY = sumY / count;
+            trail.push({x: centerX, y: centerY});
+            if(trail.length > 20) trail.shift();
+        }
+
+        // Draw Trail
+        if(trail.length > 1) {
+            ctx.strokeStyle = "#FFFF00";
+            ctx.lineWidth = 5;
+            ctx.lineJoin = "round";
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(trail[0].x, trail[0].y);
+            for(let p of trail) ctx.lineTo(p.x, p.y);
+            ctx.stroke();
         }
     }
 
-    if(count > 20) {
-        let centerX = sumX / count;
-        let centerY = sumY / count;
-        trail.push({x: centerX, y: centerY});
-        if(trail.length > 25) trail.shift(); // Keep trail short and snappy
-    }
+    requestAnimationFrame(detectBall);
+}
 
-    // Draw Smooth Trail
-    if(trail.length > 1) {
-        ctx.strokeStyle = "#00ffcc";
-        ctx.lineWidth = 4;
-        ctx.lineJoin = "round";
-        ctx.beginPath();
-        ctx.moveTo(trail[0].x, trail[0].y);
-        for(let p of trail) ctx.lineTo(p.x, p.y);
-        ctx.stroke();
-    }
-
+detectBall();
+</script>
+</body>
+</html>
     requestAnimationFrame(detectBall);
 }
 
