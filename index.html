@@ -1,27 +1,26 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Cricket Clay Ball Tracker</title>
+    <title>Cricket Ball Tracker - Circle Sample</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body { text-align:center; background:#111; color:white; font-family: sans-serif; margin: 0; padding: 10px; }
         canvas { border:2px solid #444; border-radius: 8px; max-width: 100%; height: auto; cursor: crosshair; background: #000; }
         .controls { margin: 10px; padding: 15px; background: #222; border-radius: 8px; }
         .btn { background: #00ffcc; color: black; border: none; padding: 10px 20px; border-radius: 5px; font-weight: bold; cursor: pointer; margin: 5px; }
-        .btn:hover { background: #00cca3; }
         #status { color: #0f0; font-weight: bold; min-height: 24px; display: block; margin-top: 5px; }
     </style>
 </head>
 <body>
 
-<h2>🏏 Cricket Path & Wicket Analyzer</h2>
+<h2>🏏 Path Analyzer (Circle Sampling)</h2>
 
 <div class="controls">
     <input type="file" id="upload" accept="video/*"><br><br>
     <button class="btn" id="playBtn" disabled>Play / Pause</button>
     <button class="btn" id="clearBtn">Reset All</button>
     <div style="margin-top:10px; font-size: 0.9em;">
-        Status: <span id="status">Upload video to begin</span>
+        Status: <span id="status">Upload video</span> | 
         Hue: <span id="hueVal">None</span>
     </div>
 </div>
@@ -39,12 +38,12 @@ const clearBtn = document.getElementById("clearBtn");
 const status = document.getElementById("status");
 
 let trail = [];
-let wicketPoints = []; // [ {x,y}, {x,y} ]
+let wicketPoints = [];
 let targetHue = null;
 let isPlaying = false;
 let isWicketHit = false;
+let lastSampleCircle = null; // Store {x, y} to draw the UI ring
 
-// 1. Video Loading
 upload.addEventListener('change', function() {
     const file = this.files[0];
     if (file) {
@@ -53,29 +52,24 @@ upload.addEventListener('change', function() {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             playBtn.disabled = false;
-            status.innerText = "Step 1: Click Left & Right of Wickets";
+            status.innerText = "1. Click Left & Right of Wickets";
             drawFrame();
         };
     }
 });
 
-// 2. Button Actions
 playBtn.addEventListener('click', () => {
     if (video.paused) { video.play(); isPlaying = true; detectBall(); }
     else { video.pause(); isPlaying = false; }
 });
 
 clearBtn.addEventListener('click', () => {
-    trail = [];
-    wicketPoints = [];
-    targetHue = null;
-    isWicketHit = false;
+    trail = []; wicketPoints = []; targetHue = null; isWicketHit = false; lastSampleCircle = null;
     document.getElementById("hueVal").innerText = "None";
-    status.innerText = "Reset. Click Wicket edges again.";
+    status.innerText = "Reset. Define Wickets again.";
     drawFrame();
 });
 
-// 3. User Clicks (Wickets first, then Ball)
 canvas.addEventListener('mousedown', (e) => {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -85,14 +79,27 @@ canvas.addEventListener('mousedown', (e) => {
 
     if (wicketPoints.length < 2) {
         wicketPoints.push({ x, y });
-        if (wicketPoints.length === 1) status.innerText = "Step 2: Click Right side of Wickets";
-        else status.innerText = "Step 3: Click the Clay Ball color";
+        status.innerText = wicketPoints.length === 1 ? "2. Click Right Wicket" : "3. Click Ball Center";
     } else {
-        const pixel = ctx.getImageData(x, y, 1, 1).data;
-        const hsv = rgbToHsv(pixel[0], pixel[1], pixel[2]);
-        targetHue = hsv.h;
-        document.getElementById("hueVal").innerText = Math.round(targetHue * 360) + "°";
-        status.innerText = "Ready! Press Play.";
+        // --- NEW CIRCLE SAMPLING LOGIC ---
+        const radius = 10;
+        const pixelData = ctx.getImageData(x - radius, y - radius, radius * 2, radius * 2).data;
+        
+        let totalHue = 0, validPixels = 0;
+        for (let i = 0; i < pixelData.length; i += 4) {
+            let hsv = rgbToHsv(pixelData[i], pixelData[i+1], pixelData[i+2]);
+            if (hsv.s > 0.2 && hsv.v > 0.2) { // Only sample "colorful" pixels
+                totalHue += hsv.h;
+                validPixels++;
+            }
+        }
+
+        if (validPixels > 0) {
+            targetHue = totalHue / validPixels;
+            lastSampleCircle = { x, y };
+            document.getElementById("hueVal").innerText = Math.round(targetHue * 360) + "°";
+            status.innerText = "Target Locked. Ready to Play.";
+        }
     }
     drawFrame();
 });
@@ -107,6 +114,83 @@ function rgbToHsv(r, g, b) {
     else {
         switch (max) {
             case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+    }
+    return { h, s, v };
+}
+
+function drawFrame() {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    // Draw Wicket Gate
+    if (wicketPoints.length === 2) {
+        const x1 = Math.min(wicketPoints[0].x, wicketPoints[1].x);
+        const x2 = Math.max(wicketPoints[0].x, wicketPoints[1].x);
+        ctx.fillStyle = "rgba(255, 0, 0, 0.2)";
+        ctx.fillRect(x1, 0, x2 - x1, canvas.height);
+    }
+
+    // Draw Sampling Circle UI
+    if (lastSampleCircle) {
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(lastSampleCircle.x, lastSampleCircle.y, 10, 0, Math.PI*2);
+        ctx.stroke();
+    }
+
+    // Draw Trail
+    if (trail.length > 1) {
+        ctx.strokeStyle = "#FFFF00";
+        ctx.lineWidth = 5;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(trail[0].x, trail[0].y);
+        for (let p of trail) ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+    }
+}
+
+function detectBall() {
+    if (video.paused || video.ended) return;
+    drawFrame();
+
+    if (targetHue !== null) {
+        let frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let data = frame.data;
+        let sumX = 0, sumY = 0, count = 0;
+
+        for(let i = 0; i < data.length; i += 16) {
+            let hsv = rgbToHsv(data[i], data[i+1], data[i+2]);
+            if(Math.abs(hsv.h - targetHue) < 0.07 && hsv.s > 0.2) {
+                sumX += (i/4) % canvas.width;
+                sumY += Math.floor((i/4) / canvas.width);
+                count++;
+            }
+        }
+
+        if(count > 8) {
+            let ballX = sumX / count;
+            if (wicketPoints.length === 2 && !isWicketHit) {
+                const minX = Math.min(wicketPoints[0].x, wicketPoints[1].x);
+                const maxX = Math.max(wicketPoints[0].x, wicketPoints[1].x);
+                if (ballX > minX && ballX < maxX) {
+                    isWicketHit = true;
+                    status.innerHTML = "<span style='color:#ff4444; font-size:1.5em;'>🔥 WICKET! 🔥</span>";
+                }
+            }
+            trail.push({x: ballX, y: sumY / count});
+            if(trail.length > 100) trail.shift();
+        }
+    }
+    requestAnimationFrame(detectBall);
+}
+</script>
+</body>
+</html>
             case g: h = (b - r) / d + 2; break;
             case b: h = (r - g) / d + 4; break;
         }
