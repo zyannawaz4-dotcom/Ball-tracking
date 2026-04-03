@@ -1,31 +1,65 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Cricket Ball Tracker - Circle Sample</title>
+    <title>AI Cricket Ball Tracker (Level 6)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- TensorFlow + COCO-SSD -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
     <style>
-        body { text-align:center; background:#111; color:white; font-family: sans-serif; margin: 0; padding: 10px; }
-        canvas { border:2px solid #444; border-radius: 8px; max-width: 100%; height: auto; cursor: crosshair; background: #000; }
-        .controls { margin: 10px; padding: 15px; background: #222; border-radius: 8px; }
-        .btn { background: #00ffcc; color: black; border: none; padding: 10px 20px; border-radius: 5px; font-weight: bold; cursor: pointer; margin: 5px; }
-        #status { color: #0f0; font-weight: bold; min-height: 24px; display: block; margin-top: 5px; }
+        body {
+            text-align: center;
+            background: #111;
+            color: white;
+            font-family: sans-serif;
+            margin: 0;
+            padding: 10px;
+        }
+
+        canvas {
+            border: 2px solid #444;
+            border-radius: 8px;
+            max-width: 100%;
+            background: black;
+        }
+
+        .controls {
+            margin: 10px;
+            padding: 15px;
+            background: #222;
+            border-radius: 8px;
+        }
+
+        .btn {
+            background: #00ffcc;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+
+        #status {
+            color: #0f0;
+            margin-top: 5px;
+        }
     </style>
 </head>
+
 <body>
 
-<h2>🏏 Path Analyzer (Circle Sampling)</h2>
+<h2>🏏 AI Cricket Ball Tracker (Level 6)</h2>
 
 <div class="controls">
     <input type="file" id="upload" accept="video/*"><br><br>
-    <button class="btn" id="playBtn" disabled>Play / Pause</button>
-    <button class="btn" id="clearBtn">Reset All</button>
-    <div style="margin-top:10px; font-size: 0.9em;">
-        Status: <span id="status">Upload video</span> | 
-        Hue: <span id="hueVal">None</span>
-    </div>
+    <button class="btn" id="playBtn" disabled>Play</button>
+    <div id="status">Loading AI...</div>
 </div>
 
-<video id="video" width="640" height="480" loop playsinline style="display:none;"></video>
+<video id="video" style="display:none;"></video>
 <canvas id="canvas" width="640" height="480"></canvas>
 
 <script>
@@ -34,80 +68,119 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const upload = document.getElementById("upload");
 const playBtn = document.getElementById("playBtn");
-const clearBtn = document.getElementById("clearBtn");
 const status = document.getElementById("status");
 
+let model = null;
 let trail = [];
 let wicketPoints = [];
-let targetHue = null;
-let isPlaying = false;
-let isWicketHit = false;
-let lastSampleCircle = null; // Store {x, y} to draw the UI ring
+let detectedBall = null;
 
-upload.addEventListener('change', function() {
+// 🧠 Load AI model
+async function loadAI() {
+    model = await cocoSsd.load();
+    status.innerText = "AI Ready 🚀 Upload Video";
+}
+loadAI();
+
+// Upload video
+upload.addEventListener('change', function () {
     const file = this.files[0];
-    if (file) {
-        video.src = URL.createObjectURL(file);
-        video.onloadedmetadata = () => {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            playBtn.disabled = false;
-            status.innerText = "1. Click Left & Right of Wickets";
-            drawFrame();
-        };
-    }
+    video.src = URL.createObjectURL(file);
+
+    video.onloadedmetadata = () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        playBtn.disabled = false;
+        status.innerText = "Video loaded. Press Play";
+        drawFrame();
+    };
 });
 
+// Play video
 playBtn.addEventListener('click', () => {
-    if (video.paused) { video.play(); isPlaying = true; detectBall(); }
-    else { video.pause(); isPlaying = false; }
+    video.play();
+    detectBall();
 });
 
-clearBtn.addEventListener('click', () => {
-    trail = []; wicketPoints = []; targetHue = null; isWicketHit = false; lastSampleCircle = null;
-    document.getElementById("hueVal").innerText = "None";
-    status.innerText = "Reset. Define Wickets again.";
-    drawFrame();
-});
+// Draw frame + overlays
+function drawFrame() {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-canvas.addEventListener('mousedown', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+    // trail
+    if (trail.length > 1) {
+        ctx.strokeStyle = "lime";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(trail[0].x, trail[0].y);
+        for (let p of trail) ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+    }
 
-    if (wicketPoints.length < 2) {
-        wicketPoints.push({ x, y });
-        status.innerText = wicketPoints.length === 1 ? "2. Click Right Wicket" : "3. Click Ball Center";
-    } else {
-        // --- NEW CIRCLE SAMPLING LOGIC ---
-        const radius = 10;
-        const pixelData = ctx.getImageData(x - radius, y - radius, radius * 2, radius * 2).data;
-        
-        let totalHue = 0, validPixels = 0;
-        for (let i = 0; i < pixelData.length; i += 4) {
-            let hsv = rgbToHsv(pixelData[i], pixelData[i+1], pixelData[i+2]);
-            if (hsv.s > 0.2 && hsv.v > 0.2) { // Only sample "colorful" pixels
-                totalHue += hsv.h;
-                validPixels++;
+    // ball marker
+    if (detectedBall) {
+        ctx.strokeStyle = "red";
+        ctx.beginPath();
+        ctx.arc(detectedBall.x, detectedBall.y, 10, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // wicket zone
+    if (wicketPoints.length === 2) {
+        ctx.fillStyle = "rgba(255,0,0,0.2)";
+        ctx.fillRect(
+            Math.min(wicketPoints[0].x, wicketPoints[1].x),
+            0,
+            Math.abs(wicketPoints[0].x - wicketPoints[1].x),
+            canvas.height
+        );
+    }
+}
+
+// AI detection loop
+function detectBall() {
+    if (video.paused || video.ended || !model) return;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    model.detect(canvas).then(predictions => {
+
+        let best = null;
+
+        for (let p of predictions) {
+            if (p.score > 0.4 &&
+                (p.class === "sports ball" || p.class === "ball")) {
+                best = p;
             }
         }
 
-        if (validPixels > 0) {
-            targetHue = totalHue / validPixels;
-            lastSampleCircle = { x, y };
-            document.getElementById("hueVal").innerText = Math.round(targetHue * 360) + "°";
-            status.innerText = "Target Locked. Ready to Play.";
-        }
-    }
-    drawFrame();
-});
+        if (best) {
+            let x = best.bbox[0] + best.bbox[2] / 2;
+            let y = best.bbox[1] + best.bbox[3] / 2;
 
-function rgbToHsv(r, g, b) {
-    r /= 255, g /= 255, b /= 255;
-    let max = Math.max(r, g, b), min = Math.min(r, g, b);
-    let h, s, v = max;
+            detectedBall = { x, y };
+            trail.push(detectedBall);
+
+            if (trail.length > 120) trail.shift();
+
+            // wicket detection
+            if (wicketPoints.length === 2) {
+                const minX = Math.min(wicketPoints[0].x, wicketPoints[1].x);
+                const maxX = Math.max(wicketPoints[0].x, wicketPoints[1].x);
+
+                if (x > minX && x < maxX) {
+                    status.innerText = "🔥 WICKET DETECTED (AI LEVEL 6) 🔥";
+                }
+            }
+        }
+
+        drawFrame();
+        requestAnimationFrame(detectBall);
+    });
+}
+</script>
+
+</body>
+</html>    let h, s, v = max;
     let d = max - min;
     s = max === 0 ? 0 : d / max;
     if (max === min) h = 0;
