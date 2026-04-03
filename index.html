@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Adaptive Ball Tracking</title>
+    <style>
+        body { text-align:center; background:#111; color:white; font-family: sans-serif; }
+        video, canvas { border:2px solid #444; border-radius: 8px; margin:10px; }
+        .controls { margin: 20px; padding: 10px; background: #222; display: inline-block; border-radius: 5px; }
+        #status { color: #0f0; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<h2>🏏 Adaptive Ball Tracking</h2>
+<p>Click the ball in the video to start tracking that color!</p>
+
+<div class="controls">
+    Target Hue: <span id="hueVal">None</span> | 
+    Status: <span id="status">Waiting for input...</span>
+</div><br>
+
+<video id="video" width="400" height="300" autoplay playsinline style="display:none;"></video>
+<canvas id="canvas" width="400" height="300"></canvas>
+
+<script>
+let video = document.getElementById("video");
+let canvas = document.getElementById("canvas");
+let ctx = canvas.getContext("2d");
+let trail = [];
+let targetHue = null;
+
+// 1. Get Camera
+navigator.mediaDevices.getUserMedia({ video: { width: 400, height: 300 } })
+.then(stream => { video.srcObject = stream; });
+
+// 2. Click to Sample Color (The "Clay Picker")
+canvas.addEventListener('mousedown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const pixel = ctx.getImageData(x, y, 1, 1).data;
+    const hsv = rgbToHsv(pixel[0], pixel[1], pixel[2]);
+    targetHue = hsv.h;
+    document.getElementById("hueVal").innerText = Math.round(targetHue * 360) + "°";
+    document.getElementById("status").innerText = "Tracking...";
+    trail = []; // Reset trail for new ball
+});
+
+// 3. RGB to HSV Conversion Utility
+function rgbToHsv(r, g, b) {
+    r /= 255, g /= 255, b /= 255;
+    let max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, v = max;
+    let d = max - min;
+    s = max === 0 ? 0 : d / max;
+    if (max === min) { h = 0; } 
+    else {
+        switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+    }
+    return { h, s, v };
+}
+
+function detectBall() {
+    ctx.drawImage(video, 0, 0, 400, 300);
+    if (targetHue === null) {
+        requestAnimationFrame(detectBall);
+        return;
+    }
+
+    let frame = ctx.getImageData(0, 0, 400, 300);
+    let data = frame.data;
+    let sumX = 0, sumY = 0, count = 0;
+
+    // Optimization: Check every 2nd pixel to save CPU
+    for(let i = 0; i < data.length; i += 8) {
+        let hsv = rgbToHsv(data[i], data[i+1], data[i+2]);
+
+        // Check if Hue is within +/- 10% range and has enough color (Saturation)
+        if(Math.abs(hsv.h - targetHue) < 0.05 && hsv.s > 0.3 && hsv.v > 0.2) {
+            let x = (i/4) % 400;
+            let y = Math.floor((i/4) / 400);
+            sumX += x; sumY += y; count++;
+        }
+    }
+
+    if(count > 20) {
+        let centerX = sumX / count;
+        let centerY = sumY / count;
+        trail.push({x: centerX, y: centerY});
+        if(trail.length > 25) trail.shift(); // Keep trail short and snappy
+    }
+
+    // Draw Smooth Trail
+    if(trail.length > 1) {
+        ctx.strokeStyle = "#00ffcc";
+        ctx.lineWidth = 4;
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(trail[0].x, trail[0].y);
+        for(let p of trail) ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+    }
+
+    requestAnimationFrame(detectBall);
+}
+
+detectBall();
+</script>
+</body>
+</html>
